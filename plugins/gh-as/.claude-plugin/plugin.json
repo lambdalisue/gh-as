@@ -1,0 +1,12 @@
+{
+  "name": "gh-as",
+  "description": "Run gh commands as the right GitHub account when several accounts are logged in, without switching the active one.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Alisue",
+    "email": "lambdalisue@gmail.com"
+  },
+  "homepage": "https://github.com/lambdalisue/gh-as",
+  "repository": "https://github.com/lambdalisue/gh-as",
+  "keywords": ["claude-code", "gh", "github", "authentication", "multi-account"]
+}

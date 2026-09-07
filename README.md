@@ -126,6 +126,21 @@ Plain `git` needs no wrapper: git already resolves credentials from its own
 URL-keyed `[credential]` sections and the identity from `includeIf`. Reach for
 `gh-as` when `gh` is involved.
 
+## Claude Code
+
+The repository doubles as a Claude Code plugin marketplace. The plugin carries
+one skill that teaches Claude to recognize the wrong-account failure and rerun
+the command through `gh-as`, instead of reaching for `gh auth switch` and
+changing the account every other session on the machine shares.
+
+```
+/plugin marketplace add lambdalisue/gh-as
+/plugin install gh-as@gh-as
+```
+
+The skill resolves `gh-as` from `PATH` or from `gh extension list`, so install
+one of them as above.
+
 ## Development
 
 ```console

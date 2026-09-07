@@ -1,0 +1,15 @@
+{
+  "name": "gh-as",
+  "owner": {
+    "name": "Alisue",
+    "email": "lambdalisue@gmail.com"
+  },
+  "description": "A skill that teaches Claude Code to reach for gh-as when a gh command hits the wrong GitHub account, instead of switching the account the whole machine shares.",
+  "plugins": [
+    {
+      "name": "gh-as",
+      "source": "./plugins/gh-as",
+      "description": "Recognize a gh command that failed on the wrong account and rerun it through gh-as, which injects the right token into one process only."
+    }
+  ]
+}
