@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+program=${0##*/}
+default_host=github.com
+remote=${GH_AS_REMOTE:-origin}
+host=${GH_HOST:-}
+quiet=${GH_AS_QUIET:-}
+print_only=
+
+die() {
+  printf '%s: %s\n' "$program" "$1" >&2
+  exit 1
+}
+
+usage() {
+  cat <<'USAGE'
+gh-as - run a command as one of the accounts gh is logged in with, without
+switching the account the rest of the machine sees.
+
+Usage:
+  gh-as <command> [args...]                account resolved from the repository
+  gh-as <account> -- <command> [args...]   account named explicitly
+  gh-as --print [<account>]
+  gh-as --list
+
+Options:
+  -l, --list       List the accounts logged in on the host
+  -p, --print      Print the account that would be used, then exit
+  -q, --quiet      Do not announce the account on stderr
+      --host HOST  Host to take the account from (default: $GH_HOST, the
+                   remote's host, or github.com)
+  -h, --help       Show this help
+
+Account resolution, in order:
+  1. the account named on the command line
+  2. git config --get-urlmatch gh-as.account <remote url>
+  3. git config --get-urlmatch credential.username <remote url>
+  4. the repository owner, when it is itself a logged-in account
+  5. the only account logged in on the host
+
+Environment:
+  GH_AS_REMOTE  remote to resolve the account from (default: origin)
+  GH_AS_QUIET   non-empty implies --quiet
+
+The token is handed to the command as GH_TOKEN (GH_ENTERPRISE_TOKEN off
+github.com), together with GH_AS_ACCOUNT. Nothing outside the process changes.
+USAGE
+}
+
+# An inherited token wins over --user and would hand back the ambient
+# credential under whatever name was asked for.
+gh_clean() {
+  env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN gh "$@"
+}
+
+# `gh auth status` is the only interface that enumerates accounts: hosts.yml
+# holds no tokens under a keyring setup and needs a YAML parser besides.
+accounts() {
+  gh_clean auth status --hostname "$1" 2>&1 |
+    grep -oE 'account [^ ]+' | cut -d' ' -f2 | sort -u
+}
+
+normalize_url() {
+  local url=$1 authority path
+  url=${url%/}
+  url=${url%.git}
+  case $url in
+    *://*) url=${url#*://} ;;
+    *:*) url=${url/:/\/} ;;
+  esac
+  authority=${url%%/*}
+  path=${url#*/}
+  authority=${authority##*@}
+  authority=${authority%%:*}
+  printf 'https://%s/%s\n' "$authority" "$path"
+}
+
+url_host() {
+  local rest=${1#https://}
+  printf '%s\n' "${rest%%/*}"
+}
+
+url_owner() {
+  local rest=${1#https://}
+  rest=${rest#*/}
+  printf '%s\n' "${rest%%/*}"
+}
+
+resolve_account() {
+  local url=$1 resolved_host=$2 account owner known
+
+  if [[ -n $url ]]; then
+    account=$(git config --get-urlmatch gh-as.account "$url" 2>/dev/null) || account=
+    [[ -z $account ]] || {
+      printf '%s\n' "$account"
+      return
+    }
+
+    account=$(git config --get-urlmatch credential.username "$url" 2>/dev/null) || account=
+    [[ -z $account ]] || {
+      printf '%s\n' "$account"
+      return
+    }
+  fi
+
+  known=$(accounts "$resolved_host") || known=
+  [[ -n $known ]] || die "no account logged in on $resolved_host; run: gh auth login --hostname $resolved_host"
+
+  if [[ -n $url ]]; then
+    owner=$(url_owner "$url")
+    if printf '%s\n' "$known" | grep -qxF -- "$owner"; then
+      printf '%s\n' "$owner"
+      return
+    fi
+  fi
+
+  if [[ $(printf '%s\n' "$known" | wc -l) -eq 1 ]]; then
+    printf '%s\n' "$known"
+    return
+  fi
+
+  die "cannot tell which account this repository belongs to; name one of: $(printf '%s' "$known" | tr '\n' ' ')"
+}
+
+has_separator() {
+  local arg
+  for arg in "$@"; do
+    if [[ $arg == -- ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+account=
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --)
+      shift
+      break
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    -l | --list)
+      accounts "${host:-$default_host}"
+      exit 0
+      ;;
+    -p | --print)
+      print_only=1
+      shift
+      ;;
+    -q | --quiet)
+      quiet=1
+      shift
+      ;;
+    --host)
+      [[ $# -ge 2 ]] || die "--host needs a value"
+      host=$2
+      shift 2
+      ;;
+    --host=*)
+      host=${1#*=}
+      shift
+      ;;
+    -*)
+      die "unknown option: $1"
+      ;;
+    *)
+      has_separator "$@" || break
+      [[ -z $account ]] || die "more than one account given"
+      account=$1
+      shift
+      ;;
+  esac
+done
+
+if [[ -n $print_only && -z $account && $# -eq 1 ]]; then
+  account=$1
+  shift
+fi
+
+url=
+if remote_url=$(git remote get-url "$remote" 2>/dev/null); then
+  url=$(normalize_url "$remote_url")
+fi
+
+# Off an explicit account the remote's host is not consulted: a repository
+# hosted elsewhere would otherwise send the lookup to a host gh knows nothing
+# about, which is only ever confusing when the account was already named.
+if [[ -z $host ]]; then
+  if [[ -z $account && -n $url ]]; then
+    host=$(url_host "$url")
+  else
+    host=$default_host
+  fi
+fi
+
+if [[ -z $account ]]; then
+  [[ -n $url ]] || die "no '$remote' remote here; name the account explicitly (see --help)"
+  account=$(resolve_account "$url" "$host")
+fi
+
+if [[ -n $print_only ]]; then
+  printf '%s\n' "$account"
+  exit 0
+fi
+
+[[ $# -gt 0 ]] || die "no command given (see --help)"
+
+# `gh auth login|switch|logout` bail out with "The value of the GH_TOKEN
+# environment variable is being used for authentication", so wrapping them
+# would only produce a confusing failure.
+if [[ ${1##*/} == gh ]]; then
+  for arg in "${@:2}"; do
+    case $arg in
+      -*) continue ;;
+      auth) die "gh auth refuses to run under an injected token; run it without $program" ;;
+      *) break ;;
+    esac
+  done
+fi
+
+token=$(gh_clean auth token --hostname "$host" --user "$account" 2>/dev/null) || token=
+[[ -n $token ]] ||
+  die "no token for account '$account' on $host; logged in are: $(accounts "$host" | tr '\n' ' ')"
+
+if [[ $host == "$default_host" ]]; then
+  token_var=GH_TOKEN
+else
+  token_var=GH_ENTERPRISE_TOKEN
+fi
+
+env_args=(-u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN)
+env_args+=("$token_var=$token" "GH_AS_ACCOUNT=$account")
+[[ $host == "$default_host" ]] || env_args+=("GH_HOST=$host")
+
+[[ -n $quiet ]] || printf '%s: running as %s\n' "$program" "$account" >&2
+
+# Injecting the token beats `gh auth switch`: switching rewrites
+# ~/.config/gh/hosts.yml, which every shell and agent on the machine shares, so
+# concurrent commands race over the active account and an interrupted one
+# leaves the wrong account behind. This environment dies with the process.
+exec env "${env_args[@]}" "$@"
